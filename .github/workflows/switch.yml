@@ -30,6 +30,11 @@ jobs:
       - name: Vulkan and OpenGL packages
         run: docker run --rm -v "$PWD:/work" -w /work nxvk make gl CONTAINER=
 
+      # The smoke apps include generated SPIR-V headers; build-nro.sh expects them
+      # to exist already (the container carries glslangValidator).
+      - name: Smoke-test shaders
+        run: docker run --rm -v "$PWD:/work" -w /work nxvk bash switch/smoke/shaders/gen-shaders.sh
+
       - name: Smoke-test NROs
         run: docker run --rm -v "$PWD:/work" -w /work nxvk bash switch/build/build-all-nros.sh
 
