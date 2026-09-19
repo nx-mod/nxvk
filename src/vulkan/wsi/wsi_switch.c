@@ -693,6 +693,13 @@ wsi_switch_swapchain_destroy(struct wsi_swapchain *wsi_chain,
    if (chain->window != NULL) {
       if (chain->dequeued_slot >= 0)
          nwindowCancelBuffer(chain->window, chain->dequeued_slot, NULL);
+      /* Unregister our buffers before letting go. Disconnecting does not clear
+       * preallocated slots, so the window's next user - libnx's two-buffer
+       * console, say - would later be handed our slot 2, still pointing at
+       * the images freed below, and the queue fails (LibnxBinderError_NoInit).
+       */
+      for (uint32_t i = 0; i < chain->base.image_count; i++)
+         bqSetPreallocatedBuffer(&chain->window->bq, i, NULL);
       nwindowReleaseBuffers(chain->window);
    }
 
