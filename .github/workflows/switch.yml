@@ -1,0 +1,53 @@
+# Builds the Switch portlib packages (Vulkan, and OpenGL via Zink) and every
+# smoke-test NRO in the same toolchain container the Makefile uses. A v* tag
+# also publishes them as a release, ready to unpack into $DEVKITPRO/portlibs/switch.
+name: switch
+
+on:
+  push:
+    branches: [switch]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - uses: actions/checkout@v4
+
+      - name: Toolchain image
+        run: make image CONTAINER=docker
+
+      - name: Vulkan and OpenGL packages
+        run: make gl CONTAINER=docker
+
+      - name: Smoke-test NROs
+        run: docker run --rm -v "$PWD:/work" -w /work nxvk bash switch/build/build-all-nros.sh
+
+      - name: Bundle
+        run: |
+          version=$(cat VERSION)
+          mkdir -p dist
+          tar -C switch/build/pkg -cJf dist/nxvk-switch-portlib-${version}.tar.xz .
+          tar -C switch/smoke/out -cJf dist/nxvk-switch-smoke-nros-${version}.tar.xz .
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nxvk-switch
+          path: dist/
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" \
+            --notes "Prebuilt nxvk for Nintendo Switch (devkitA64). Unpack the portlib archive into \$DEVKITPRO/portlibs/switch; link with pkg-config nxvk (Vulkan) or nxvk-gl (OpenGL/EGL). The smoke-test NROs exercise the driver on hardware; see switch/smoke/README.md."
