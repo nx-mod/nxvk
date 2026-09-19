@@ -22,13 +22,13 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      # The container runs as root, so its output is root-owned; the Makefile's
-      # host-side steps (stamps, packaging) run as root too.
       - name: Toolchain image
-        run: sudo make image CONTAINER=docker
+        run: make image CONTAINER=docker
 
+      # The whole Makefile runs inside the toolchain container (it has devkitA64
+      # for the packaging step, which a stock runner does not).
       - name: Vulkan and OpenGL packages
-        run: sudo make gl CONTAINER=docker
+        run: docker run --rm -v "$PWD:/work" -w /work nxvk make gl CONTAINER=
 
       - name: Smoke-test NROs
         run: docker run --rm -v "$PWD:/work" -w /work nxvk bash switch/build/build-all-nros.sh
