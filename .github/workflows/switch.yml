@@ -22,11 +22,13 @@ jobs:
 
       - uses: actions/checkout@v4
 
+      # The container runs as root, so its output is root-owned; the Makefile's
+      # host-side steps (stamps, packaging) run as root too.
       - name: Toolchain image
-        run: make image CONTAINER=docker
+        run: sudo make image CONTAINER=docker
 
       - name: Vulkan and OpenGL packages
-        run: make gl CONTAINER=docker
+        run: sudo make gl CONTAINER=docker
 
       - name: Smoke-test NROs
         run: docker run --rm -v "$PWD:/work" -w /work nxvk bash switch/build/build-all-nros.sh
@@ -34,6 +36,7 @@ jobs:
       - name: Bundle
         run: |
           version=$(cat VERSION)
+          sudo chown -R "$(id -u):$(id -g)" switch/build/pkg switch/smoke/out
           mkdir -p dist
           tar -C switch/build/pkg -cJf dist/nxvk-switch-portlib-${version}.tar.xz .
           tar -C switch/smoke/out -cJf dist/nxvk-switch-smoke-nros-${version}.tar.xz .
