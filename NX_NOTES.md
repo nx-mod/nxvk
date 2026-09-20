@@ -3,8 +3,17 @@
 NVK - Mesa's Vulkan driver for NVIDIA GPUs - running on the Nintendo Switch. Used by
 [wii-nx](https://github.com/nx-mod/wii-nx).
 
-**Used unmodified.** This fork exists to pin a known-good revision; upstream is
-[PalindromicBreadLoaf/nxvk](https://github.com/PalindromicBreadLoaf/nxvk).
+Upstream is [PalindromicBreadLoaf/nxvk](https://github.com/PalindromicBreadLoaf/nxvk). This fork pins a
+known-good revision, adds CI that builds the packages and every smoke-test app, and carries one fix:
+
+**The window was left unusable after a Vulkan swapchain was destroyed.** Disconnecting does not clear
+the buffer slots a swapchain registered, so the next user of the screen - libnx's two-buffer console,
+say - was handed a stale slot as soon as its own two were busy, and the queue died
+(`LibnxBinderError_NoInit`, surfacing as a fatal `BadGfxDequeueBuffer`). The swapchain now unregisters
+its buffers before letting go. Worth upstreaming: it affects any app that hands the screen back.
+
+Prebuilt packages are published on this fork's [releases](https://github.com/nx-mod/nxvk/releases):
+the Vulkan and OpenGL portlibs, and the smoke-test NROs.
 
 ## How wii-nx consumes it
 
@@ -21,3 +30,8 @@ Licensing: NVK is GPL, and it links statically, so anything shipping it is GPL-c
 GPL-3.0 and its source is public.
 
 It also builds OpenGL 4.5 / ES 3.2 through Zink; wii-nx uses the Vulkan path only.
+
+## Releases
+
+Prebuilt packages are tagged `<upstream version>-nx-mod-v<n>`, the same convention across every nx-mod
+library, so a project can pin one line per dependency.
