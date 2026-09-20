@@ -30,6 +30,11 @@ jobs:
       - name: Vulkan and OpenGL packages
         run: docker run --rm -v "$PWD:/work" -w /work nxvk make gl CONTAINER=
 
+      # The gl_* apps link the driver and the GL stack out of one build tree, so
+      # the driver has to exist in the OpenGL build directory too.
+      - name: Driver inside the OpenGL build
+        run: docker run --rm -v "$PWD:/work" -w /work nxvk make driver CROSS=switch/build/cross-zink CONTAINER=
+
       # The smoke apps include generated SPIR-V headers; build-nro.sh expects them
       # to exist already (the container carries glslangValidator).
       - name: Smoke-test shaders
