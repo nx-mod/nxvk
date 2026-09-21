@@ -35,3 +35,24 @@ It also builds OpenGL 4.5 / ES 3.2 through Zink; wii-nx uses the Vulkan path onl
 
 Prebuilt packages are tagged `<upstream version>-nx-mod-v<n>`, the same convention across every nx-mod
 library, so a project can pin one line per dependency.
+
+## EGL_KHR_fence_sync on Horizon
+
+`src/egl/drivers/horizon/egl_horizon.c` advertised four extensions
+(`KHR_create_context`, `KHR_no_config_context`, `KHR_surfaceless_context`,
+`EXT_create_context_robustness`) and its `_eglDriver` had no sync entry points.
+Plain GL never notices - none of the fifteen GL smoke tests in `switch/smoke/`
+calls `eglCreateSyncKHR` - but Dawn's OpenGL backend refuses a display without
+one of the sync extensions:
+
+    BackendGL.cpp: "EGL_KHR_fence_sync or EGL_KHR_reusable_sync must be supported"
+
+so WebGPU-over-Zink reported "No supported adapters" here while the Vulkan path
+ran clean. The driver now implements `EGL_KHR_fence_sync` and `EGL_KHR_wait_sync`
+over the gallium fence that `st_context_flush` hands back: create flushes and
+takes the fence, `eglClientWaitSyncKHR` is `fence_finish` with the caller's
+timeout, `eglWaitSyncKHR` is `fence_server_sync` where the driver has it.
+
+Fence rather than reusable: a reusable sync is signalled by the application and
+says nothing about the GPU, and callers asking for a sync want to know when the
+work landed.

@@ -22,12 +22,14 @@
 #include "egldriver.h"
 #include "egllog.h"
 #include "eglsurface.h"
+#include "eglsync.h"
 #include "egltypedefs.h"
 
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
 #include "pipe/p_screen.h"
 #include "pipe/p_state.h"
+#include "util/os_time.h"
 #include "util/u_atomic.h"
 #include "util/u_inlines.h"
 
@@ -416,6 +418,9 @@ horizon_initialize_impl(_EGLDisplay *disp)
                           EGL_OPENGL_ES3_BIT_KHR;
 
    disp->Extensions.KHR_create_context = EGL_TRUE;
+   /* A GPU fence, over the gallium fence the context flush hands back. */
+   disp->Extensions.KHR_fence_sync = EGL_TRUE;
+   disp->Extensions.KHR_wait_sync = EGL_TRUE;
    disp->Extensions.KHR_no_config_context = EGL_TRUE;
    disp->Extensions.KHR_surfaceless_context = EGL_TRUE;
 
@@ -598,6 +603,134 @@ horizon_make_current(_EGLDisplay *disp, _EGLSurface *dsurf, _EGLSurface *rsurf,
    return EGL_TRUE;
 }
 
+/* #pragma mark - sync objects */
+
+/**
+ * EGL_KHR_fence_sync over a gallium fence.
+ *
+ * Plain GL never needs this - every smoke test here drives GL through a context
+ * and a surface and nothing more - but a client that schedules its own work
+ * against ours does. Dawn's OpenGL backend refuses a display outright without
+ * either this or EGL_KHR_reusable_sync (BackendGL.cpp, "EGL_KHR_fence_sync or
+ * EGL_KHR_reusable_sync must be supported"), which is what kept WebGPU from
+ * reaching Zink here while the Vulkan path worked.
+ *
+ * Fence, not reusable: a reusable sync is signalled by the application and says
+ * nothing about the GPU, and the callers that ask for this want to know when
+ * the work has actually landed.
+ */
+struct horizon_egl_sync {
+   _EGLSync base;
+   struct pipe_fence_handle *fence;
+};
+
+static inline struct horizon_egl_sync *
+horizon_egl_sync(_EGLSync *sync)
+{
+   return (struct horizon_egl_sync *)sync;
+}
+
+static _EGLSync *
+horizon_create_sync(_EGLDisplay *disp, EGLenum type,
+                    const EGLAttrib *attrib_list)
+{
+   struct horizon_egl_context *hctx =
+      horizon_egl_context(_eglGetCurrentContext());
+   struct horizon_egl_sync *sync;
+
+   if (type != EGL_SYNC_FENCE_KHR) {
+      _eglError(EGL_BAD_ATTRIBUTE, "eglCreateSyncKHR");
+      return NULL;
+   }
+
+   /* A fence marks a point in a context's command stream, so there has to be
+    * one current. */
+   if (!hctx || !hctx->st) {
+      _eglError(EGL_BAD_MATCH, "eglCreateSyncKHR");
+      return NULL;
+   }
+
+   sync = calloc(1, sizeof(*sync));
+   if (!sync) {
+      _eglError(EGL_BAD_ALLOC, "eglCreateSyncKHR");
+      return NULL;
+   }
+
+   if (!_eglInitSync(&sync->base, disp, type, attrib_list)) {
+      free(sync);
+      return NULL;
+   }
+
+   /* The spec has eglCreateSyncKHR insert the fence into the command stream
+    * and flush, so the sync is reachable by the GPU before anyone waits. */
+   st_context_flush(hctx->st, 0, &sync->fence, NULL, NULL);
+   if (!sync->fence) {
+      free(sync);
+      _eglError(EGL_BAD_ALLOC, "eglCreateSyncKHR");
+      return NULL;
+   }
+
+   return &sync->base;
+}
+
+static EGLBoolean
+horizon_destroy_sync(_EGLDisplay *disp, _EGLSync *base)
+{
+   struct horizon_egl_display *hdpy = horizon_egl_display(disp);
+   struct horizon_egl_sync *sync = horizon_egl_sync(base);
+
+   if (sync->fence)
+      hdpy->pscreen->fence_reference(hdpy->pscreen, &sync->fence, NULL);
+   free(sync);
+
+   return EGL_TRUE;
+}
+
+static EGLint
+horizon_client_wait_sync(_EGLDisplay *disp, _EGLSync *base, EGLint flags,
+                         EGLTime timeout)
+{
+   struct horizon_egl_display *hdpy = horizon_egl_display(disp);
+   struct horizon_egl_context *hctx =
+      horizon_egl_context(_eglGetCurrentContext());
+   struct horizon_egl_sync *sync = horizon_egl_sync(base);
+
+   /* The fence was flushed when it was created, so EGL_SYNC_FLUSH_COMMANDS_BIT
+    * has nothing left to force. */
+   (void)flags;
+
+   if (base->SyncStatus == EGL_SIGNALED_KHR)
+      return EGL_CONDITION_SATISFIED_KHR;
+
+   if (hdpy->pscreen->fence_finish(hdpy->pscreen, hctx ? hctx->st->pipe : NULL,
+                                   sync->fence, (uint64_t)timeout)) {
+      base->SyncStatus = EGL_SIGNALED_KHR;
+      return EGL_CONDITION_SATISFIED_KHR;
+   }
+
+   return EGL_TIMEOUT_EXPIRED_KHR;
+}
+
+static EGLint
+horizon_server_wait_sync(_EGLDisplay *disp, _EGLSync *base)
+{
+   struct horizon_egl_context *hctx =
+      horizon_egl_context(_eglGetCurrentContext());
+   struct horizon_egl_sync *sync = horizon_egl_sync(base);
+
+   if (!hctx || !hctx->st)
+      return _eglError(EGL_BAD_MATCH, "eglWaitSyncKHR");
+
+   /* Make the GPU wait, not the caller. Without driver support for that, the
+    * honest fallback is to wait here instead of pretending the wait happened. */
+   if (hctx->st->pipe->fence_server_sync)
+      hctx->st->pipe->fence_server_sync(hctx->st->pipe, sync->fence, 0);
+   else
+      horizon_client_wait_sync(disp, base, 0, OS_TIMEOUT_INFINITE);
+
+   return EGL_TRUE;
+}
+
 const _EGLDriver _eglDriver = {
    .Initialize = horizon_initialize,
    .Terminate = horizon_terminate,
@@ -610,4 +743,8 @@ const _EGLDriver _eglDriver = {
    .DestroySurface = horizon_destroy_surface,
    .SwapBuffers = horizon_swap_buffers,
    .SwapInterval = horizon_swap_interval,
+   .CreateSyncKHR = horizon_create_sync,
+   .DestroySyncKHR = horizon_destroy_sync,
+   .ClientWaitSyncKHR = horizon_client_wait_sync,
+   .WaitSyncKHR = horizon_server_wait_sync,
 };
